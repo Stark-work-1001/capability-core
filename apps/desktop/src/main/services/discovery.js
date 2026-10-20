@@ -25,12 +25,16 @@ export function discoveryCandidates(assetDir) {
     add('plugin', 'dsh', 'DSH 本地插件', path.join(dsh, 'plugins'), { format: 'plugin-package', depth: 2 });
     add('mcp', 'dsh', 'DSH 配置', dsh, { format: 'mcp-config', depth: 0 });
   }
-  // 本机通用能力仓库（用户既有资产）
-  const agentCore = path.join('D:\\', '.agent-core');
-  if (fs.existsSync(agentCore)) {
-    add('skill', 'dsh', '本机技能仓库 (.agent-core/.skill)', path.join(agentCore, '.skill'), { format: 'skill-dir', depth: 1 });
-    add('mcp', 'dsh', '本机 MCP 工程 (.agent-core/.mcp)', path.join(agentCore, '.mcp'), { format: 'mcp-project', depth: 1 });
-    add('plugin', 'dsh', '本机插件仓库 (.agent-core/.plugin)', path.join(agentCore, '.plugin'), { format: 'plugin-package', depth: 1 });
+  // 通用能力仓库：用户自己维护的跨宿主资产目录。
+  // 位置由 CC_EXTRA_LIBRARY 环境变量指定；未指定时回退到用户主目录下的默认位置。
+  // 不硬编码盘符或用户名，便于在不同机器上直接使用。
+  const extraLibrary = process.env.CC_EXTRA_LIBRARY
+    ? path.resolve(process.env.CC_EXTRA_LIBRARY)
+    : path.join(USER_HOME, '.capability-assets');
+  if (fs.existsSync(extraLibrary)) {
+    add('skill', 'dsh', '本机技能仓库 (通用资产目录 / .skill)', path.join(extraLibrary, '.skill'), { format: 'skill-dir', depth: 1 });
+    add('mcp', 'dsh', '本机 MCP 工程 (通用资产目录 / .mcp)', path.join(extraLibrary, '.mcp'), { format: 'mcp-project', depth: 1 });
+    add('plugin', 'dsh', '本机插件仓库 (通用资产目录 / .plugin)', path.join(extraLibrary, '.plugin'), { format: 'plugin-package', depth: 1 });
   }
 
   // ---- Codex ----
