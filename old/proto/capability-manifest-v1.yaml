@@ -1,0 +1,264 @@
+# Capability Manifest v1.0
+# CapabilityCore 资产注册协议
+#
+# 任何新资产，只要能产出符合本 schema 的 manifest，即可被中枢索引与调用。
+# 本文件在 v0.2.0 冻结，之后变更需走版本升级流程。
+
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: CapabilityManifest
+version: "1.0"
+
+# ─────────────────────────────────────────────
+# 六类资产
+# ─────────────────────────────────────────────
+enums:
+  AssetKind:
+    description: |
+      skill         —— SKILL.md 技能包，提供知识与流程，不提供可调用工具
+      mcp           —— MCP server，提供一批可调用工具
+      plugin        —— 插件包，可同时携带 skill / mcp / hook / agent
+      suite         —— 套件，多个资产的组装形态
+      ghost         —— 幽灵智能体，只在委派链中存在，不持有实体工具
+      organization  —— 组织，智能体层级与编队关系
+    values: [skill, mcp, plugin, suite, ghost, organization]
+
+  Authority:
+    description: 权限级别，构成偏序。委派链上只能逐级收窄，不能扩大。
+    order: [read, observe, write, destructive]
+
+  SideEffect:
+    description: 副作用性质，构成偏序。
+    order: [none, local_artifact, mutating, irreversible]
+
+  ToolPosture:
+    description: 工具姿态，构成偏序。数值越大越受限。
+    order: [pure, reader, writer, gated]
+
+  RelationKind:
+    description: |
+      leader_to_sub / delegates —— 参与委派图计算
+      requires / extends / conflicts / belongs_to —— 仅用于索引，不进委派图
+    values: [leader_to_sub, delegates, requires, extends, conflicts, belongs_to]
+
+# ─────────────────────────────────────────────
+# 核心结构
+# ─────────────────────────────────────────────
+required: [schema_version, id, kind, name]
+
+properties:
+  schema_version:
+    type: string
+    const: "1.0"
+
+  id:
+    type: string
+    description: 全局唯一 ID
+    pattern: "^[a-zA-Z0-9._:-]{1,200}$"
+
+  kind:
+    $ref: "#/enums/AssetKind"
+
+  name:
+    type: string
+    minLength: 1
+    maxLength: 200
+
+  version:
+    type: string
+    default: "0"
+
+  description:
+    type: string
+
+  # ── L4：多维身份 ─────────────────────────
+  identity:
+    $ref: "#/definitions/CapabilityIdentity"
+
+  provides:
+    type: array
+    items:
+      $ref: "#/definitions/ProvidedCapability"
+
+  # ── L5：编队关系 ─────────────────────────
+  relations:
+    type: array
+    items:
+      $ref: "#/definitions/AssetRelation"
+
+  provenance:
+    $ref: "#/definitions/Provenance"
+
+# ─────────────────────────────────────────────
+definitions:
+  CapabilityIdentity:
+    description: |
+      智能体执行任务过程中的行为身份。
+      注意：这不是用户身份，也不是 OAuth 主体。
+    properties:
+      role:
+        type: string
+        description: 角色名，如 researcher / reviewer / planner
+
+      authority:
+        $ref: "#/enums/Authority"
+
+      side_effect:
+        $ref: "#/enums/SideEffect"
+
+      tool_posture:
+        $ref: "#/enums/ToolPosture"
+
+      idempotent:
+        type: boolean
+        default: true
+
+      open_world:
+        type: boolean
+        default: false
+
+      dimensions:
+        type: object
+        description: |
+          扩展维度。**可被结构化过滤**，不会被塞进向量做语义匹配。
+          例：{cost_tier: high, domain: geo}
+        additionalProperties: {type: string}
+
+      source:
+        enum: [inferred, manual]
+        default: inferred
+        description: inferred=扫描推断；manual=用户手动改写，覆盖推断值
+
+  ProvidedCapability:
+    description: |
+      一条能力声明。区分"能力"与"工具"：
+      Skill 有能力无工具；MCP server 有工具。
+    required: [capability_id, name, summary]
+    properties:
+      capability_id:
+        type: string
+        description: 约定 `{asset_id}::{cap_key}`
+      name:
+        type: string
+        description: 短名，用于 BM25 精确检索
+      summary:
+        type: string
+        description: 语义描述，**向量检索主要吃这个字段**
+      input_schema:
+        type: object
+        description: 结构化输入 schema（仅 MCP tool 具备）
+      tags:
+        type: array
+        items: {type: string}
+        description: 行为标签 read_only / destructive / idempotent / open_world
+
+  AssetRelation:
+    required: [kind, target_id]
+    properties:
+      kind:
+        $ref: "#/enums/RelationKind"
+      target_id:
+        type: string
+      scope_narrowing:
+        type: string
+        description: 委派时的权限收窄说明
+      max_depth:
+        type: integer
+        minimum: 1
+        maximum: 32
+        default: 8
+        description: 委派链深度上限，防环
+
+  Provenance:
+    properties:
+      source_path:
+        type: string
+      imported_at:
+        type: string
+        format: date-time
+      content_hash:
+        type: string
+        description: 增量索引的变更检测依据
+      source_format:
+        type: string
+        enum: [skill_md, plugin_json, mcp_json, native]
+
+# ─────────────────────────────────────────────
+# 校验规则（超出 JSON Schema 的部分）
+# ─────────────────────────────────────────────
+validation_rules:
+  - id: V1
+    rule: "id 与 name 均不可为空白"
+  - id: V2
+    rule: "kind=mcp 时，provides[].input_schema 必须存在"
+  - id: V3
+    rule: "kind=ghost 时，provides 可为空，但 relations 必须非空"
+  - id: V4
+    rule: "委派图构建时必须检测环；环上资产拒绝入图"
+  - id: V5
+    rule: "委派链上 child's identity 不得宽于 parent（用 admits() 校验）"
+
+# ─────────────────────────────────────────────
+# 示例
+# ─────────────────────────────────────────────
+examples:
+  skill:
+    schema_version: "1.0"
+    id: "skill::release-checklist"
+    kind: skill
+    name: release-checklist
+    version: "1.0"
+    description: 执行发布前的验证清单
+    identity:
+      role: reviewer
+      authority: observe
+      side_effect: none
+      tool_posture: reader
+      idempotent: true
+      open_world: false
+      dimensions: {domain: release}
+      source: inferred
+    provides:
+      - capability_id: "skill::release-checklist::run"
+        name: run
+        summary: 按顺序执行 git status、pytest、CHANGELOG 核对、Docker 构建检查
+        tags: [read_only, idempotent]
+    provenance:
+      source_format: skill_md
+      source_path: "vendor/skill/release-checklist/SKILL.md"
+
+  mcp:
+    schema_version: "1.0"
+    id: "mcp::gromacs"
+    kind: mcp
+    name: gromacs
+    description: GROMACS 分子动力学模拟工具集
+    identity:
+      role: simulator
+      authority: write
+      side_effect: local_artifact
+      tool_posture: writer
+      dimensions: {domain: computational-chemistry, cost_tier: high}
+      source: inferred
+    provides:
+      - capability_id: "mcp::gromacs::run_md"
+        name: run_md
+        summary: 运行分子动力学模拟，生成轨迹文件
+        input_schema: {type: object, required: [conf, mdp]}
+        tags: [destructive]
+    relations:
+      - kind: belongs_to
+        target_id: "organization::research-team"
+
+  organization:
+    schema_version: "1.0"
+    id: "organization::research-team"
+    kind: organization
+    name: research-team
+    description: 研究团队的智能体编队
+    relations:
+      - kind: leader_to_sub
+        target_id: "ghost::planner-01"
+        scope_narrowing: 不得直接执行写操作
+      - kind: leader_to_sub
+        target_id: "mcp::gromacs"
+        max_depth: 4

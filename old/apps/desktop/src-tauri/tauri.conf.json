@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "capability-core",
+  "version": "0.1.0",
+  "identifier": "dev.assets.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev:vite",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build:vite",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "能力核心 · 能力中枢 ｜ 开发版 DEVEL",
+        "width": 1360,
+        "height": 860,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Capability Core Project",
+    "copyright": "Copyright (c) 2026 Capability Core Project",
+    "shortDescription": "能力核心 · 能力中枢",
+    "longDescription": "把多个智能体生态的 skill / MCP / plugin / suite / ghost / org 能力汇总、去重、建索引，并按需分发给接入的对话模型。",
+    "icon": [
+      "icons/devel/32x32.png",
+      "icons/devel/128x128.png",
+      "icons/devel/128x128@2x.png",
+      "icons/devel/icon.ico",
+      "icons/devel/icon.png"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

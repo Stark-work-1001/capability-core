@@ -1,0 +1,15 @@
+[package]
+name = "ac-llm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CapabilityCore 模型接入管理：本地 Ollama / 云端 API / OpenAI 兼容"
+
+[dependencies]
+ac-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+ureq = { version = "3.2.1", features = ["json"] }

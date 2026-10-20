@@ -1,0 +1,115 @@
+{
+  "providers": [],
+  "slots": [
+    {
+      "slot": "embedding",
+      "enabled": false,
+      "mode": "cloud-openai",
+      "endpoint": "https://api.siliconflow.cn/v1",
+      "model": "Qwen/Qwen3-Embedding-8B",
+      "api_key_env": "SILICONFLOW_API_KEY",
+      "timeout_ms": 30000,
+      "input_template": "qwen3-embedding",
+      "output_schema": ""
+    },
+    {
+      "slot": "judge",
+      "enabled": false,
+      "mode": "cloud-openai",
+      "endpoint": "https://api.siliconflow.cn/v1",
+      "model": "Qwen/Qwen3.8-27B",
+      "api_key_env": "SILICONFLOW_API_KEY",
+      "timeout_ms": 30000,
+      "input_template": "",
+      "output_schema": "json_schema"
+    },
+    {
+      "slot": "rerank",
+      "enabled": false,
+      "mode": "cloud-openai",
+      "endpoint": "https://api.siliconflow.cn/v1",
+      "model": "Qwen/Qwen3-VL-Reranker-8B",
+      "api_key_env": "SILICONFLOW_API_KEY",
+      "timeout_ms": 30000,
+      "input_template": "",
+      "output_schema": ""
+    },
+    {
+      "slot": "diagnose",
+      "enabled": false,
+      "mode": "disabled",
+      "endpoint": "",
+      "model": "",
+      "api_key_env": "",
+      "timeout_ms": 30000,
+      "input_template": "",
+      "output_schema": ""
+    },
+    {
+      "slot": "repair",
+      "enabled": false,
+      "mode": "disabled",
+      "endpoint": "",
+      "model": "",
+      "api_key_env": "",
+      "timeout_ms": 30000,
+      "input_template": "",
+      "output_schema": ""
+    },
+    {
+      "slot": "dedup",
+      "enabled": false,
+      "mode": "disabled",
+      "endpoint": "",
+      "model": "",
+      "api_key_env": "",
+      "timeout_ms": 30000,
+      "input_template": "",
+      "output_schema": ""
+    },
+    {
+      "slot": "generate",
+      "enabled": false,
+      "mode": "disabled",
+      "endpoint": "",
+      "model": "",
+      "api_key_env": "",
+      "timeout_ms": 30000,
+      "input_template": "",
+      "output_schema": ""
+    },
+    {
+      "slot": "verify",
+      "enabled": false,
+      "mode": "disabled",
+      "endpoint": "",
+      "model": "",
+      "api_key_env": "",
+      "timeout_ms": 30000,
+      "input_template": "",
+      "output_schema": ""
+    },
+    {
+      "slot": "fallback",
+      "enabled": false,
+      "mode": "disabled",
+      "endpoint": "",
+      "model": "",
+      "api_key_env": "",
+      "timeout_ms": 30000,
+      "input_template": "",
+      "output_schema": ""
+    },
+    {
+      "slot": "localembedding",
+      "enabled": false,
+      "mode": "disabled",
+      "endpoint": "",
+      "model": "",
+      "api_key_env": "",
+      "timeout_ms": 30000,
+      "input_template": "",
+      "output_schema": ""
+    }
+  ]
+}

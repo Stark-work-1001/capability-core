@@ -1,0 +1,982 @@
+{
+  "tasks": [
+    {
+      "id": "connection.agent-register",
+      "display_name": "对话智能体接入中枢",
+      "description": "宿主插件通过 A/B/C 三通道把自己登记进中枢：A 端点注册、B 心跳文件、C 静态归属推断。",
+      "executor": "script",
+      "implementation": "三通道全是本地程序：A 通道 Registry::register_agent 写 agents 表；B 通道 Registry::scan_heartbeat_dir 扫 <data_dir>/heartbeat/*.json；C 通道 Registry::register_static_agents 按包名与路径标记静态归属。宿主侧插件只负责写心跳文件，中枢侧零模型参与。",
+      "status": "implemented",
+      "depends_on": [],
+      "crosses_with": [
+        "connection.channel-health",
+        "capability.invoke",
+        "fault.host-detect"
+      ],
+      "inputs": [
+        "AgentRegistration{agent_id, display_name, ecosystem, kind, transport, endpoint}",
+        "heartbeat/<host>.json{host, version, pid, last_beat, capabilities}"
+      ],
+      "outputs": [
+        "agents 表一行（同一身份的多通道合并成一条，channels 列出全部通道）",
+        "AgentRecord"
+      ],
+      "evidence": [
+        "三通道都是文件读写与 SQL 写入，没有一处需要模型推理",
+        "在线/离线由时间差与 STALE_WINDOW_MS 阈值比较得出，是算术不是判断",
+        "宿主身份归一（heartbeat:<id> 与 <id> 视为同一智能体）是字符串处理"
+      ],
+      "script_entry": [
+        "ac_registry::agents::register_agent",
+        "ac_registry::agents::scan_heartbeat_dir",
+        "ac_registry::agents::register_static_agents"
+      ]
+    },
+    {
+      "id": "connection.channel-health",
+      "display_name": "通道健康判定",
+      "description": "把 agents 表的接入事实汇总成在线 / 陈旧 / 离线 / 未知四档，供界面与诊断共用。",
+      "executor": "script",
+      "implementation": "Registry::list_agents 汇总各通道最近一次心跳；agent_overview 给出四档计数；observe_state(age_ms) 按 900s 阈值判 stale。",
+      "status": "implemented",
+      "depends_on": [
+        "connection.agent-register"
+      ],
+      "crosses_with": [
+        "connection.agent-register",
+        "fault.model-health"
+      ],
+      "inputs": [
+        "agents 表 + heartbeat 文件 mtime + 自报 last_beat"
+      ],
+      "outputs": [
+        "AgentOverview{online, stale, offline, unknown, static_agents, heartbeat_agents, mcp_agents}"
+      ],
+      "evidence": [
+        "四档由时间差阈值直接判定，脚本可做且可复现",
+        "unknown（从没上报过心跳）与 offline 分开统计：把「没上报」算成「挂了」会让在线数长期骗人"
+      ],
+      "script_entry": [
+        "ac_registry::agents::list_agents",
+        "ac_registry::agents::agent_overview",
+        "ac_registry::agents::observe_state"
+      ]
+    },
+    {
+      "id": "capability.index",
+      "display_name": "能力索引",
+      "description": "扫描资产目录，解析后写入库，并与磁盘做全量对账：磁盘上没了的，库里跟着消失。",
+      "executor": "script",
+      "implementation": "ingest::ingest(registry, root) 一条调用串起 scan_dir_with → upsert_all → 对账删除 → sync_logical → dedup_candidates，返回 IngestReport。",
+      "status": "implemented",
+      "depends_on": [],
+      "crosses_with": [
+        "capability.identify",
+        "capability.delete",
+        "capability.retrieve",
+        "capability.create",
+        "capability.dedup-decide"
+      ],
+      "inputs": [
+        "扫描根目录（vendor/）的目录树"
+      ],
+      "outputs": [
+        "IngestReport{parsed, inserted, updated, unchanged, removed, counts, skipped, dedup_candidates}",
+        "assets / capabilities / asset_locations 三张表"
+      ],
+      "evidence": [
+        "扫描-解析-入库-对账是一条确定性流水线，M1 起就有单测覆盖（含「扫描失败不得清库」）",
+        "inserted/updated/unchanged 由内容指纹 content_hash 决定，不看 mtime，不需要任何语义判断"
+      ],
+      "script_entry": [
+        "ac_registry::ingest::ingest",
+        "ac_registry::scan::scan_dir_with",
+        "ac_registry::store::upsert_all",
+        "ac_registry::store::sync_logical"
+      ]
+    },
+    {
+      "id": "capability.identify",
+      "display_name": "能力识别与身份推断",
+      "description": "把三种异构清单（SKILL.md / plugin.json / .mcp.json）解析成统一的 CapabilityManifest，并推断权限、副作用、来源、作者。",
+      "executor": "script",
+      "implementation": "parse::parse_asset 按文件名选解析器；infer::infer 用规则表推断身份维度；origin::classify_manifest 判来源与注册方式；author::infer_author 判作者与出处。",
+      "status": "implemented",
+      "depends_on": [],
+      "crosses_with": [
+        "capability.index",
+        "capability.retrieve",
+        "capability.create",
+        "capability.dedup-decide",
+        "fault.compat-check",
+        "fault.behavior-vs-description"
+      ],
+      "inputs": [
+        "SKILL.md / plugin.json / .mcp.json 原文 + 相对路径"
+      ],
+      "outputs": [
+        "CapabilityManifest{kind, identity, provides[], provenance, author, author_source}"
+      ],
+      "evidence": [
+        "三种格式的解析是「作者声明字段的确定性抽取」，同一份文件永远得到同一结果",
+        "身份维度由 infer 的关键词 / 工具名 / 标签规则表给出，可单测、可复现",
+        "作者出处分 manifest / frontmatter / package 三档，是三段路径判断，不是「猜作者是谁」"
+      ],
+      "script_entry": [
+        "ac_registry::parse::parse_asset",
+        "ac_registry::infer::infer",
+        "ac_registry::origin::classify_manifest",
+        "ac_registry::author::infer_author"
+      ]
+    },
+    {
+      "id": "capability.retrieve",
+      "display_name": "能力检索",
+      "description": "按类型 / 标签 / 权限 / 自由文本找能力：结构化基线永远可用，全文 BM25 与向量召回是可选增强。",
+      "executor": "script",
+      "implementation": "RetrievalEngine::search 走「结构化基线 + 可选层增强」，全文层由 FullTextIndex::attach 挂载；对外由 CapabilityService::search 统一裁剪与鉴权。",
+      "status": "implemented",
+      "depends_on": [
+        "capability.index"
+      ],
+      "crosses_with": [
+        "capability.index",
+        "capability.identify",
+        "capability.semantic-recall",
+        "capability.invoke",
+        "capability.intent-disambiguate"
+      ],
+      "inputs": [
+        "AssetFilter{kind, tag, min_authority, text} + 自由文本 + limit"
+      ],
+      "outputs": [
+        "SearchResult{hits: Vec<AssetRow>, degradation: DegradationReport}"
+      ],
+      "evidence": [
+        "结构化过滤下推 SQLite，BM25 走 tantivy 倒排，全程无模型调用",
+        "三层降级（全文 / 向量 / LLM 缺席或故障）都仍返回基线结果，M2 有六组降级用例钉住",
+        "结果为空与基线故障是两件事：degradation.baseline_failed() 单独报告"
+      ],
+      "script_entry": [
+        "ac_retrieval::pipeline::RetrievalEngine::search",
+        "ac_retrieval::fulltext::FullTextIndex::attach",
+        "ac_mcp::service::search"
+      ]
+    },
+    {
+      "id": "capability.semantic-recall",
+      "display_name": "语义召回",
+      "description": "把「画个时序图」和「mermaid sequence diagram」对上：向量召回层。",
+      "executor": "script",
+      "implementation": "VectorIndex 已实现 HTTP 嵌入客户端、余弦打分与索引重建（rebuild / recall / probe）。它调用的是**嵌入服务**，不是对话模型；服务不可用时如实降级为结构化基线。",
+      "status": "partial",
+      "depends_on": [
+        "capability.index"
+      ],
+      "crosses_with": [
+        "capability.retrieve",
+        "capability.intent-disambiguate",
+        "fault.model-health"
+      ],
+      "inputs": [
+        "查询文本",
+        "库内资产的 search_blob（name + description + 能力摘要 + 标签）"
+      ],
+      "outputs": [
+        "Scored{id, score} 向量命中列表（经结构化过滤后回库取行）"
+      ],
+      "evidence": [
+        "嵌入 + 余弦相似度是算法，不是模型推理：代码在 ac_retrieval::vector（含超时、chunked 解析、维度校验）",
+        "Partial 的原因：内核侧代码齐了，但需要外部嵌入服务（默认 127.0.0.1:18191）真的在跑，且没有单独的 Tauri 命令暴露 rebuild",
+        "服务不在时必须报 Failed 并给原因，不能伪装成「没有语义命中」——那是谎报"
+      ],
+      "script_entry": [
+        "ac_retrieval::vector::VectorIndex::recall",
+        "ac_retrieval::vector::VectorIndex::rebuild",
+        "ac_retrieval::vector::VectorIndex::probe"
+      ]
+    },
+    {
+      "id": "capability.invoke",
+      "display_name": "能力调用",
+      "description": "把能力内容交给调用方，并记账：谁、在什么时候、拉了哪一项能力。",
+      "executor": "script",
+      "implementation": "CapabilityService::content 按调用方身份裁剪后返回能力全文；Router::acquire 给可变能力加共享 / 互斥租约；调用结束后 report_capability_usage 记账。MCP 侧由 McpServer::tools 暴露同一套逻辑。",
+      "status": "implemented",
+      "depends_on": [
+        "capability.retrieve"
+      ],
+      "crosses_with": [
+        "capability.retrieve",
+        "connection.agent-register",
+        "repair.track"
+      ],
+      "inputs": [
+        "caller agent_id",
+        "capability_id / asset_id",
+        "租约模式（shared / exclusive）"
+      ],
+      "outputs": [
+        "CapabilityContent{manifest, content, ...}（交给宿主执行）",
+        "agent_capability_usage 记账行 + 租约 Allocation"
+      ],
+      "evidence": [
+        "中枢的边界是「把能力内容交出去」而不是「代它执行」：这一步是读文件 + 鉴权 + 记账，全是脚本",
+        "MCP tools/call 与 HTTP /api/v1/capabilities/:id/content 共用 CapabilityService::content，一条逻辑两个入口，不会漂移",
+        "租约互斥由单条带条件的 UPDATE 与内存队列保证，不涉及语义判断"
+      ],
+      "script_entry": [
+        "ac_mcp::service::content",
+        "ac_mcp::router::acquire",
+        "ac_registry::agents::report_capability_usage",
+        "ac_mcp::mcp::tools"
+      ]
+    },
+    {
+      "id": "capability.intent-disambiguate",
+      "display_name": "意图消歧（选哪个能力）",
+      "description": "用户一句话，库里有十几个名字相近的能力：挑一个，并说清为什么是它。",
+      "executor": "model",
+      "implementation": "需要模型的语义理解能力：输入用户原话 + 检索命中的候选（≤20 条），输出选中的 capability_id 与理由，或明确回答「都不是」。",
+      "status": "planned",
+      "depends_on": [
+        "capability.retrieve"
+      ],
+      "crosses_with": [
+        "capability.retrieve",
+        "capability.semantic-recall",
+        "solution.explain",
+        "routing.script-first"
+      ],
+      "inputs": [
+        "用户自然语言需求",
+        "capability.retrieve 的候选集（含 name / summary / tags）"
+      ],
+      "outputs": [
+        "选中的 capability_id + 理由；或 none_of_them=true"
+      ],
+      "evidence": [
+        "只在「候选非空且字面分数接近」时触发，其余情况脚本直接给结果，模型不是默认路径",
+        "必须结构化输出，否则下游无法把选择落到具体能力上",
+        "Planned：ac-llm 只有 LlmProvider trait，没有任何实现（provider.rs 明写「本轮不可达」）"
+      ],
+      "model_contract": {
+        "capabilities": [
+          "中文语义理解（同义改写、跨语言归一）",
+          "在给定候选集内做选择（不能凭空造 id）",
+          "结构化输出（JSON）"
+        ],
+        "input_schema": "{\"query\": string, \"candidates\": [{\"id\", \"name\", \"summary\", \"tags\"}]}；候选 ≤ 20 条，全部来自 capability.retrieve 的真实命中，候选为空时不调用模型",
+        "output_schema": "{\"picked\": [{\"id\": string, \"reason\": string}], \"none_of_them\": bool}；id 必须出现在输入候选里，否则整条结果作废（由调用方校验）",
+        "why_not_script": "BM25 只能对齐字面。用户说「把会议录音变成待办」，库里的能力叫 transcribe-meeting 且摘要里只有「转写」，两者没有共同词项，规则表补不到这个差距；同义词表能覆盖一小部分，覆盖不到的部分只能猜——而猜错一个能力的代价比不召回更大（用户会照着错误的能力去干活）。"
+      }
+    },
+    {
+      "id": "capability.create",
+      "display_name": "新增能力",
+      "description": "把一份新能力纳管进来：脚本负责落盘与入库，模型负责把「我要一个能 X 的工具」写成清单。",
+      "executor": "hybrid",
+      "implementation": "prepare_import / commit_import 完成所有类型的受控收录；r16 生成单文件技能并调用验收模型，审核后发布。多文件生成尚需人工导入",
+      "status": "partial",
+      "depends_on": [
+        "capability.identify"
+      ],
+      "crosses_with": [
+        "capability.index",
+        "capability.identify",
+        "capability.delete",
+        "fault.compat-check"
+      ],
+      "inputs": [
+        "目标 kind（skill / mcp）",
+        "文件清单（相对路径 → 字节）",
+        "入口文件相对路径"
+      ],
+      "outputs": [
+        "assets/<kind>/<id>/ 下的纳管实体",
+        "AssetWriteReport{rel_path, files, asset_id}"
+      ],
+      "evidence": [
+        "不可变版本、SHA-256 预览摘要、乐观并发、事务登记与回滚已接通"
+      ],
+      "script_entry": [
+        "ac_registry::asset_store::init_layout",
+        "ac_registry::asset_store::install_skill",
+        "ac_registry::asset_store::install_mcp",
+        "ac_registry::asset_store::verify_entity",
+        "ac_registry::store::upsert"
+      ],
+      "model_contract": {
+        "capabilities": [
+          "按规范生成 Markdown / JSON 清单（SKILL.md frontmatter、plugin.json、.mcp.json）",
+          "把用户的功能描述拆成「能力名 + 摘要 + 标签」",
+          "结构化输出（必须能被 parse_asset 解析）"
+        ],
+        "input_schema": "{requirement: string（用户原话）, kind: skill|mcp, constraints?: {allowed_tools, author, version}}",
+        "output_schema": "{files: [{rel_path: string, content: string}], entry: string（入口相对路径，必须在 files 里）}",
+        "why_not_script": "脚本能校验、能落盘、能入库，但写不出一份合规的 SKILL.md：正文是从「用户想做什么」到「一份给人、也给模型看的能力说明」的生成，不是模板填空。模板填出来的东西解析能过、用起来是空壳。"
+      }
+    },
+    {
+      "id": "capability.delete",
+      "display_name": "删除能力",
+      "description": "用户说的「删除」在中枢里是软删除：库内行置 archived，列表默认看不见；只有 assets/ 内的纳管副本才允许物理删。",
+      "executor": "script",
+      "implementation": "store::set_asset_lifecycle(id, \"archived\") 改一行 SQL；asset_store::remove_entity(kind, id) 删 assets/ 内的纳管副本（带越界防护）；faults::remove_asset_entry 同步清掉纳管登记。",
+      "status": "implemented",
+      "depends_on": [
+        "capability.identify"
+      ],
+      "crosses_with": [
+        "capability.index",
+        "capability.create",
+        "capability.dedup-decide"
+      ],
+      "inputs": [
+        "asset_id",
+        "删除语义（archived 软删 / assets 纳管副本物理删）"
+      ],
+      "outputs": [
+        "lifecycle=archived 的库内行（默认不出现在列表，include_archived 才可见）",
+        "remove_entity 返回是否真的删掉了那一份纳管副本"
+      ],
+      "evidence": [
+        "项目铁律：绝不物理删除库内资产行；「删除」= UPDATE 一个状态列，纯 SQL",
+        "唯一允许物理删的是 assets/ 内部纳管副本，remove_entity 锁死两条：规范化后必须在 root 之内、深度必须正好是 root/<kind>/<id>",
+        "没有一处需要模型判断「这个能力该不该删」——那是用户的选择，不是模型的建议"
+      ],
+      "script_entry": [
+        "ac_registry::store::set_asset_lifecycle",
+        "ac_registry::asset_store::remove_entity",
+        "ac_registry::faults::remove_asset_entry"
+      ]
+    },
+    {
+      "id": "capability.dedup-decide",
+      "display_name": "重复能力裁决",
+      "description": "同一份内容在磁盘上有多个副本：算出候选，交给用户裁决，绝不自动合并。",
+      "executor": "script",
+      "implementation": "store::dedup_candidates 按 content_hash（L1，字节级）与 normalized_hash（L2，去空白 / 版本号 / 大小写）分组给出候选；decide_dedup 落裁决；dedup_history 出审计；指纹算法在 fingerprint 模块。",
+      "status": "implemented",
+      "depends_on": [
+        "capability.index"
+      ],
+      "crosses_with": [
+        "capability.index",
+        "capability.identify",
+        "capability.delete"
+      ],
+      "inputs": [
+        "assets + asset_locations 表",
+        "用户裁决（merge / keep_both / ignore）"
+      ],
+      "outputs": [
+        "DedupCandidate{group_key, match_level, suggested_canonical, location_ids}",
+        "DedupRecord 审计行"
+      ],
+      "evidence": [
+        "候选完全由哈希分组算出：L1 是字节级相同，L2 是规范化后相同，两者都是确定性算法",
+        "「绝不自动合并」是纪律：程序只提供候选与历史，合并动作必须由用户显式点出来",
+        "裁决落库是写一行记录，纯 SQL"
+      ],
+      "script_entry": [
+        "ac_registry::store::dedup_candidates",
+        "ac_registry::store::decide_dedup",
+        "ac_registry::store::dedup_history",
+        "ac_registry::fingerprint::l1_hash",
+        "ac_registry::fingerprint::l2_hash"
+      ]
+    },
+    {
+      "id": "fault.detect",
+      "display_name": "故障识别",
+      "description": "七类检查跑一遍：结构化存储、库版本、依赖、全文索引、向量层、LLM 层、资产解析。",
+      "executor": "script",
+      "implementation": "diagnostics::collect(registry, ctx) 逐类跑实测探针，产出 DiagnosticReport；向量层由 VectorProbe::probe_from_env 真探一次（带超时与冷却）。",
+      "status": "implemented",
+      "depends_on": [
+        "capability.index"
+      ],
+      "crosses_with": [
+        "fault.locate",
+        "fault.compat-check",
+        "fault.model-health",
+        "fault.behavior-vs-description",
+        "solution.plan"
+      ],
+      "inputs": [
+        "Registry",
+        "DiagContext{db_path, scan_root, preview_json, llm, vector}"
+      ],
+      "outputs": [
+        "DiagnosticReport{diagnostics[], critical, error, warning, info, auto_fixable, needs_confirm, manual_only, needs_llm}"
+      ],
+      "evidence": [
+        "七类检查全部是实测探针（读 user_version / 打开索引 / 探端点 / 试解析），不是模型判断",
+        "每条诊断自带 needs_llm 与 needs_llm_reason：什么时候该求援模型，由脚本先判定并写清理由",
+        "「缺席 / 禁用 / 故障 / 就绪」四态可区分是 M2 的硬要求：把「没这能力」和「有但挂了」混成一个 bool，处置就无从下手"
+      ],
+      "script_entry": [
+        "ac_registry::diagnostics::collect",
+        "ac_registry::diagnostics::VectorProbe::probe_from_env",
+        "ac_retrieval::health::StageState::as_str"
+      ]
+    },
+    {
+      "id": "fault.locate",
+      "display_name": "故障定位",
+      "description": "不只说「坏了」，要说清「哪个文件的哪个字段、凭什么这么判」。",
+      "executor": "script",
+      "implementation": "locator::Locator::locate 对 MCP 配置逐 server 检测，产出 FaultReport（7 类 FailureClass + 三档证据）；sweep::sweep 把检测与落库串成一次巡检，sweep::mcp_targets 提供目标。",
+      "status": "implemented",
+      "depends_on": [
+        "fault.detect"
+      ],
+      "crosses_with": [
+        "fault.detect",
+        "solution.plan",
+        "repair.user-files",
+        "repair.verify",
+        "fault.behavior-vs-description"
+      ],
+      "inputs": [
+        "资产 source_path + 原文",
+        "文件系统 / PATH / 环境变量探针"
+      ],
+      "outputs": [
+        "FaultReport{asset_id, failure_class, also_detected[], location{field,value,source_file}, evidence[Probed|Recorded|Inferred], prerequisites[], suggested_repair_kind}",
+        "asset_faults 表"
+      ],
+      "evidence": [
+        "7 类 FailureClass 每一类都对应一次实测：文件是否存在、命令是否在 PATH、变量是否已设、JSON 能否解析",
+        "证据分 Probed / Recorded / Inferred 三档，推断出来的永远不会被当成实测（has_probed_evidence 是硬要求）",
+        "定位到「哪个文件哪个字段」是路径与字符串计算，不需要模型"
+      ],
+      "script_entry": [
+        "ac_registry::locator::Locator::locate",
+        "ac_registry::sweep::sweep",
+        "ac_registry::sweep::mcp_targets",
+        "ac_registry::faults::record_faults"
+      ]
+    },
+    {
+      "id": "fault.compat-check",
+      "display_name": "不兼容识别",
+      "description": "这个资产声明的协议中枢认不认、它的能力条目解析得对不对、它能被哪些宿主用。",
+      "executor": "script",
+      "implementation": "protocol::check_all 逐资产逐能力检查协议与清单字段，matrix 汇总成矩阵；hosts::asset_host_support_detail 给出资产 ↔ 宿主的支持判定与依据。",
+      "status": "implemented",
+      "depends_on": [
+        "capability.identify"
+      ],
+      "crosses_with": [
+        "fault.detect",
+        "capability.identify",
+        "capability.create",
+        "fault.host-detect"
+      ],
+      "inputs": [
+        "库内资产行（source_format / source_path / manifest）"
+      ],
+      "outputs": [
+        "ProtocolMatrix{rows[protocol, supported, assets, capabilities, passed, failed, success_rate, top_reasons]}",
+        "HostSupport{hosts[], basis[]}"
+      ],
+      "evidence": [
+        "兼容性判据是协议白名单 + 清单字段校验，纯规则",
+        "success_rate 的分母是能力条目数；分母为 0 时报 0 而不是 1——没有样本不等于全部通过"
+      ],
+      "script_entry": [
+        "ac_registry::protocol::check_all",
+        "ac_registry::protocol::matrix",
+        "ac_registry::hosts::asset_host_support_detail",
+        "ac_registry::protocol::is_supported"
+      ]
+    },
+    {
+      "id": "fault.host-detect",
+      "display_name": "宿主探测",
+      "description": "本机装了哪些智能体宿主：claude-code / codex / qoder / kimi-code / deepseek-harness …",
+      "executor": "script",
+      "implementation": "hosts::detect 逐条跑探测规则（路径存在 / 命令在 PATH / 环境变量非空），sync_hosts 落库，seed_defaults 首次写内置清单，load_specs 读回用户自定义清单。",
+      "status": "implemented",
+      "depends_on": [],
+      "crosses_with": [
+        "fault.compat-check",
+        "connection.agent-register"
+      ],
+      "inputs": [
+        "<data_dir>/hosts/*.json 宿主清单",
+        "本机文件系统 / PATH / 环境变量"
+      ],
+      "outputs": [
+        "AgentHost{id, detected, connected, protocols[], evidence[]}",
+        "agent_hosts 表"
+      ],
+      "evidence": [
+        "探测规则只有三类：路径存在、命令在 PATH、环境变量非空，逐条都能产出证据",
+        "detected=false 时也输出未命中证据，界面才能区分「真没装」和「这个版本没加规则」"
+      ],
+      "script_entry": [
+        "ac_registry::hosts::detect",
+        "ac_registry::hosts::sync_hosts",
+        "ac_registry::hosts::seed_defaults",
+        "ac_registry::hosts::load_specs"
+      ]
+    },
+    {
+      "id": "fault.model-health",
+      "display_name": "模型层健康",
+      "description": "配了几个 provider、哪些被关了、有没有 key、有没有一个是真能调的。",
+      "executor": "script",
+      "implementation": "ac_llm::provider::views 把配置转成带掩码的视图，implemented_count 统计「真有调用实现」的 provider 数（本轮恒为 0）；诊断的 LLM 层分支据此报 not_implemented 而不是 ready。",
+      "status": "implemented",
+      "depends_on": [],
+      "crosses_with": [
+        "fault.detect",
+        "connection.channel-health",
+        "capability.semantic-recall"
+      ],
+      "inputs": [
+        "<data_dir>/llm-providers.json"
+      ],
+      "outputs": [
+        "ProviderView{id, status(not_configured|disabled|not_implemented|ready), masked_key, has_key}",
+        "implemented 计数"
+      ],
+      "evidence": [
+        "「配置能不能解析、是否 enabled、有没有 key」都是读 JSON 判断，脚本可做",
+        "implemented_count 现在恒为 0：ac-llm 里没有任何 LlmProvider 实现，诊断必须如实报 not_implemented——把它报成 ready 就是骗人",
+        "api_key 只回掩码（mask_key），明文永远不进前端"
+      ],
+      "script_entry": [
+        "ac_llm::provider::views",
+        "ac_llm::provider::implemented_count",
+        "ac_llm::provider::load_registry"
+      ]
+    },
+    {
+      "id": "fault.behavior-vs-description",
+      "display_name": "行为与描述一致性判定",
+      "description": "清单说它能做 A，正文描述的流程却是 B：静态检查全过，但用户报告「这能力不像它说的那样」。",
+      "executor": "model",
+      "implementation": "需要模型的长上下文与语义一致性判断：读资产全文，判断「它声明的能力」与「它正文里实际描述的流程」是否一致，并引用原文作为证据。",
+      "status": "planned",
+      "depends_on": [
+        "capability.identify",
+        "fault.detect"
+      ],
+      "crosses_with": [
+        "fault.detect",
+        "fault.locate",
+        "capability.identify",
+        "solution.explain",
+        "routing.script-first"
+      ],
+      "inputs": [
+        "资产 manifest + 全文",
+        "静态检查结果（已通过的那些）"
+      ],
+      "outputs": [
+        "判定：一致 / 部分一致 / 不一致 / 判不了，附原文引用与置信度"
+      ],
+      "evidence": [
+        "只在静态检查全绿、但用户报告「行为不对」时触发，不是默认路径——否则每份资产都要过一次模型，成本与误报都不可接受",
+        "必须带原文引用：没有引用的「不一致」结论无法人工复核，等于不可反驳的指控",
+        "Planned：模型层未接"
+      ],
+      "model_contract": {
+        "capabilities": [
+          "长上下文（单资产 5k–50k 字）",
+          "代码 / 流程理解",
+          "结构化输出 + 原文引用（必须能人工复核）"
+        ],
+        "input_schema": "{asset:{id, name, description, provides[]}, source_text: string（≤50k 字）, static_facts:[{kind, ok, detail}]}",
+        "output_schema": "{verdict: consistent|partially|inconsistent|undecidable, evidence:[{quote, why}], confidence: 0..1}",
+        "why_not_script": "脚本能判「字段齐不齐、协议认不认」，判不了「这段 SKILL.md 声称的能力与它正文描述的步骤是不是一回事」。这是语义一致性判断：同一句话在不同语境下可以是承诺，也可以是示例。规则表只能抓极少数关键词矛盾（例如声明只读却出现 rm -rf），抓不到的占绝大多数。"
+      }
+    },
+    {
+      "id": "solution.plan",
+      "display_name": "修复计划生成",
+      "description": "每条故障对应一个动作：改什么、动谁的数据、是否破坏性、需不需要用户点头。",
+      "executor": "script",
+      "implementation": "diagnostics::collect 为每条诊断填 RepairPlan{action, scope, destructive, summary, changes[]}；RepairPlan::repairability 是纯函数，决定 auto / confirm / manual；faults_api::repair_tasks 把故障清单转成给智能体看的作业单。",
+      "status": "implemented",
+      "depends_on": [
+        "fault.detect",
+        "fault.locate"
+      ],
+      "crosses_with": [
+        "fault.detect",
+        "fault.locate",
+        "solution.explain",
+        "solution.known-issue-match",
+        "repair.hub-owned",
+        "repair.user-files"
+      ],
+      "inputs": [
+        "Diagnostic[]",
+        "FaultQuery{status, asset_id, failure_class, claimed_by}"
+      ],
+      "outputs": [
+        "RepairPlan{action, scope, destructive, summary, changes[]}",
+        "RepairTaskList{open, in_progress, tasks[], central_agent_scope[]}"
+      ],
+      "evidence": [
+        "repairability 是纯函数：动用户源文件一律 confirm；动中枢自己的数据时破坏性动作也要 confirm；其余 auto",
+        "任务单里带 prerequisites 与 boundaries，接手的智能体不用再猜边界",
+        "脚本给的是「按分类映射到动作」；「这个具体故障到底该怎么修」见 solution.explain"
+      ],
+      "script_entry": [
+        "ac_registry::diagnostics::RepairPlan::repairability",
+        "ac_registry::faults::list_faults",
+        "ac_mcp::faults_api::repair_tasks"
+      ]
+    },
+    {
+      "id": "solution.known-issue-match",
+      "display_name": "已知问题匹配",
+      "description": "这条故障以前出现过吗？上次是怎么修的？",
+      "executor": "hybrid",
+      "implementation": "脚本半：按 fault_id / failure_class / 资产指纹查 asset_faults 与 fault_repairs 的历史记录。模型半：历史无命中或只有部分相似时，从故障原文与证据推理一个方案。",
+      "status": "planned",
+      "depends_on": [
+        "fault.locate",
+        "repair.track"
+      ],
+      "crosses_with": [
+        "solution.plan",
+        "solution.explain",
+        "repair.track"
+      ],
+      "inputs": [
+        "StoredFault（含 evidence 与 prerequisites）",
+        "该故障 / 同类故障的修复历史"
+      ],
+      "outputs": [
+        "匹配结论（复用 / 改造 / 全新）+ 分步方案 + 风险"
+      ],
+      "evidence": [
+        "脚本能做的那半：查询函数全在（list_faults / repair_history），数据也在库里",
+        "Planned：**没有任何匹配与排序算法**——历史记录只是躺在表里，还没有东西去比对它们",
+        "不把它做成纯脚本：按 failure_class 分组是粗筛，粗筛完剩下的「像不像」才是关键那一步"
+      ],
+      "script_entry": [
+        "ac_registry::faults::list_faults",
+        "ac_registry::faults::repair_history",
+        "ac_registry::fingerprint::l1_hash"
+      ],
+      "model_contract": {
+        "capabilities": [
+          "故障原文理解（含错误码、路径、堆栈）",
+          "历史修复记录归纳",
+          "结构化输出（分步骤 + 风险）"
+        ],
+        "input_schema": "{fault:{failure_class, classes[], location, evidence, prerequisites}, history:[{action, actor, note, at}]}",
+        "output_schema": "{match: reuse|adapt|novel, plan:[{step, why, risk}], confidence: 0..1}",
+        "why_not_script": "「这条新故障和三个月前那条是不是同一类问题」不是字符串相等：错误信息里带着不同的路径、不同的版本号、不同的 server 名，但根因可能完全相同。规则能按 failure_class 粗筛，粗筛之后「像不像」的排序需要语义判断。"
+      }
+    },
+    {
+      "id": "solution.explain",
+      "display_name": "故障解释（说人话）",
+      "description": "把「full_text 状态 failed，0 篇文档」翻译成「搜索的全文索引坏了，重建一次就好，你的资产文件不受影响」。",
+      "executor": "model",
+      "implementation": "ac_mcp::workflows::execute(r4) 调用 Diagnose → Judge → Fallback，保存方案和维修历史；需要已配置模型，运行结果单独登记",
+      "status": "implemented",
+      "depends_on": [
+        "solution.plan"
+      ],
+      "crosses_with": [
+        "solution.plan",
+        "solution.known-issue-match",
+        "fault.behavior-vs-description",
+        "capability.intent-disambiguate",
+        "repair.user-files",
+        "routing.script-first"
+      ],
+      "inputs": [
+        "一条 Diagnostic（含 detail 原文与 RepairPlan）",
+        "可选上下文：相关资产、最近改动"
+      ],
+      "outputs": [
+        "summary + 分步操作 + 每步的预期与风险 + 停止条件"
+      ],
+      "evidence": [
+        "方案以实际证据为输入；缺少模型时记录未完成；输出待审核，不标记故障已修复"
+      ],
+      "model_contract": {
+        "capabilities": [
+          "中文技术解释（面向非专家改写）",
+          "保留原始事实（不许把错误原文改写成猜测）",
+          "结构化输出（步骤 + 风险 + 停止条件）"
+        ],
+        "input_schema": "{diagnostic:{category, severity, title, subject, detail, plan:{action, scope, destructive, summary, changes[]}}, context?:{asset?, recent_changes?}}",
+        "output_schema": "{summary: string, steps:[{action, expected, risk}], when_to_stop: string}",
+        "why_not_script": "RepairPlan.summary 已经是人话，但它是**分类级模板**：同一句「重建全文索引」在「索引从未建过」「索引过期」「索引目录被占」三种情况下该做的事不一样，用户看到的后果也不一样。把模板拼成段落不等于解释；解释需要理解这条具体故障的因果。"
+      }
+    },
+    {
+      "id": "repair.hub-owned",
+      "display_name": "中枢自有数据修复",
+      "description": "只动中枢自己的派生物：重建全文索引、重新扫描入库、清掉过期预览缓存。",
+      "executor": "script",
+      "implementation": "repair_hub 命令已连接重新扫描、重建全文索引与审计。预览缓存清理仍未开放执行",
+      "status": "partial",
+      "depends_on": [
+        "solution.plan"
+      ],
+      "crosses_with": [
+        "solution.plan",
+        "repair.verify",
+        "repair.user-files"
+      ],
+      "inputs": [
+        "RepairPlan{action 属于 rebuild_search_index | rescan_assets | clear_preview_cache}"
+      ],
+      "outputs": [
+        "重建后的 search-index/",
+        "重新对账后的 assets 表",
+        "被清掉的已消失故障 id"
+      ],
+      "evidence": [
+        "两个白名单动作可从故障修复面板执行；模型不能传入任意命令"
+      ],
+      "script_entry": [
+        "ac_retrieval::fulltext::FullTextIndex::attach",
+        "ac_registry::ingest::ingest",
+        "ac_registry::faults::reconcile_asset_faults"
+      ]
+    },
+    {
+      "id": "repair.user-files",
+      "display_name": "用户源文件修复",
+      "description": "改 vendor/ 里的启动命令、路径、环境变量——这一步中枢绝不自己动手。",
+      "executor": "hybrid",
+      "implementation": "r5 根据故障生成同类型入口修订草稿，验收后提交到纳管目录；原始 vendor 文件保留。多文件修复通过受控包导入",
+      "status": "partial",
+      "depends_on": [
+        "fault.locate",
+        "solution.plan"
+      ],
+      "crosses_with": [
+        "fault.locate",
+        "solution.plan",
+        "repair.hub-owned",
+        "repair.verify",
+        "solution.explain"
+      ],
+      "inputs": [
+        "FaultReport.location{field, value, source_file}",
+        "已知的根目录搬家表"
+      ],
+      "outputs": [
+        "候选补丁（文件 / 字段 / 旧值 / 新值 / 风险）",
+        "是否需要人判断"
+      ],
+      "evidence": [
+        "模型生成、验收、发布和维修记录已有入口；发布后的实际可用性仍需复检"
+      ],
+      "script_entry": [
+        "ac_registry::locator::remap_path",
+        "ac_registry::locator::find_unexpanded_vars",
+        "ac_registry::locator::parse_mcp_servers"
+      ],
+      "model_contract": {
+        "capabilities": [
+          "配置语义理解（这条命令原本想启动什么）",
+          "跨文件一致性推理（同一个路径在几处引用）",
+          "结构化输出（候选补丁 + 风险）"
+        ],
+        "input_schema": "{fault:{location, evidence, prerequisites}, config_excerpt: string, known_roots:[{old, new}]}",
+        "output_schema": "{patches:[{file, field, old, new, why, risk}], needs_human: bool}",
+        "why_not_script": "脚本能算出「这个路径不存在」「这个变量没展开」，也能按重映射表把旧根换新根。但「这条命令原本应该指向哪里」取决于用户意图与上游约定：重映射表覆盖不到时，猜错会把一个能跑的配置改成不能跑的。中枢的铁律是不写 vendor/，所以最终落盘还必须由外部智能体在自己的职权内执行。"
+      }
+    },
+    {
+      "id": "repair.verify",
+      "display_name": "修复后复检",
+      "description": "修完再跑一遍同一条检测：故障真消失了吗？",
+      "executor": "script",
+      "implementation": "sweep::sweep 再跑一次巡检，用本次检出集合清理该资产的旧故障（reconcile_asset_faults）；确认消失后由 resolve_fault 结案，全程留审计。",
+      "status": "implemented",
+      "depends_on": [
+        "repair.hub-owned"
+      ],
+      "crosses_with": [
+        "repair.hub-owned",
+        "repair.user-files",
+        "fault.locate",
+        "repair.track"
+      ],
+      "inputs": [
+        "资产 id + 该资产本次的检出集合"
+      ],
+      "outputs": [
+        "被清掉的故障 id 列表",
+        "status=fixed 的故障行 + 一条修复历史"
+      ],
+      "evidence": [
+        "复检 = 再跑一次同一条检测流水线，没有任何新判据",
+        "sweep 里「先落库再清理」的顺序有注释与测试钉住：反过来会让刚复检确认的故障短暂消失",
+        "结案只允许认领人做，这是权限判断不是语义判断"
+      ],
+      "script_entry": [
+        "ac_registry::sweep::sweep",
+        "ac_registry::faults::reconcile_asset_faults",
+        "ac_registry::faults::resolve_fault"
+      ]
+    },
+    {
+      "id": "repair.track",
+      "display_name": "修复过程跟踪",
+      "description": "谁认领了这条故障、正在修、修完了、还是判定不可修——状态机与审计。",
+      "executor": "script",
+      "implementation": "faults::claim_fault 用一条带条件的 UPDATE 做排他认领；release_fault 释放；log_repair 追加审计；repair_history 出历史。",
+      "status": "implemented",
+      "depends_on": [],
+      "crosses_with": [
+        "repair.verify",
+        "capability.invoke",
+        "solution.known-issue-match"
+      ],
+      "inputs": [
+        "fault_id",
+        "agent_id",
+        "目标状态（fixed / unrepairable）+ 备注"
+      ],
+      "outputs": [
+        "ClaimOutcome{Claimed|TakenByOther|AlreadyResolved|...}",
+        "fault_repairs 审计行"
+      ],
+      "evidence": [
+        "认领是「先读后写」的反面教材，所以条件写在 UPDATE 的 WHERE 里，由 SQLite 保证互斥",
+        "修复历史 append-only：它是审计不是状态，改历史等于销毁证据"
+      ],
+      "script_entry": [
+        "ac_registry::faults::claim_fault",
+        "ac_registry::faults::release_fault",
+        "ac_registry::faults::log_repair",
+        "ac_registry::faults::repair_history"
+      ]
+    },
+    {
+      "id": "routing.script-first",
+      "display_name": "脚本优先判定",
+      "description": "每个节点先问「能不能写成程序」，能写的一律写成程序；只有写不出来的才接模型。",
+      "executor": "script",
+      "implementation": "本模块就是判定的产物：all_tasks 给出全部节点，catalog 给出按执行者与状态的计数，route_repair_action 把内核的 RepairAction 映射到「谁执行」。",
+      "status": "implemented",
+      "depends_on": [],
+      "crosses_with": [
+        "capability.intent-disambiguate",
+        "fault.behavior-vs-description",
+        "solution.explain"
+      ],
+      "inputs": [
+        "用户六项需求",
+        "内核已有能力清单（模块 / 函数）"
+      ],
+      "outputs": [
+        "任务路由表：每个节点的执行者、状态、依赖、交叉、判定证据"
+      ],
+      "evidence": [
+        "判定规则：能写成「读文件 / 查库 / 比较时间 / 算哈希 / 走规则表」的就是 script",
+        "只有「理解自然语言 / 判断语义等价 / 生成正文」才归 model——这三类在 25 个节点里只占 3 个",
+        "model 型节点全部 Planned：ac-llm 只有 trait 没有实现，任何标 Implemented 的 model 节点都是谎报（由测试钉住）"
+      ],
+      "script_entry": [
+        "ac_registry::tasks::catalog",
+        "ac_registry::tasks::all_tasks",
+        "ac_registry::tasks::route_repair_action"
+      ]
+    }
+  ],
+  "requirements": [
+    {
+      "id": "r1",
+      "title": "接入 · 识别 · 索引 · 调用",
+      "statement": "对话智能体能够通过相应插件与能力中枢连接，来识别、索引、调用相关能力",
+      "task_ids": [
+        "connection.agent-register",
+        "connection.channel-health",
+        "capability.identify",
+        "capability.index",
+        "capability.retrieve",
+        "capability.semantic-recall",
+        "capability.invoke",
+        "capability.intent-disambiguate"
+      ],
+      "note": "8 个节点里 7 个是脚本、其中 6 个已实现（语义召回缺外部嵌入服务）。唯一要模型的是「选哪个能力」的意图消歧，且只在候选分数接近时才触发。"
+    },
+    {
+      "id": "r2",
+      "title": "新增能力 · 删除能力",
+      "statement": "能够完成新增能力和能力的删除",
+      "task_ids": [
+        "capability.create",
+        "capability.delete",
+        "capability.dedup-decide"
+      ],
+      "note": "删除是纯脚本且已实现（软删除 + assets 纳管副本物理删）。新增是混合：落盘 / 入库脚本已实现，写清单正文需要模型。"
+    },
+    {
+      "id": "r3",
+      "title": "识别故障与不兼容",
+      "statement": "能够识别到模型的故障和不兼容的地方",
+      "task_ids": [
+        "fault.detect",
+        "fault.locate",
+        "fault.compat-check",
+        "fault.host-detect",
+        "fault.model-health",
+        "fault.behavior-vs-description"
+      ],
+      "note": "5 个脚本节点已实现（诊断 / 定位 / 协议矩阵 / 宿主探测 / 模型层健康）。只有「行为与描述一致性」必须模型，且是可选路径。"
+    },
+    {
+      "id": "r4",
+      "title": "获取故障解决方案",
+      "statement": "能够获取故障的解决方案",
+      "task_ids": [
+        "solution.plan",
+        "solution.known-issue-match",
+        "solution.explain"
+      ],
+      "note": "结构化修复计划已实现；r4 已接通模型诊断、中文解释及维修记录。跨故障的历史语义匹配仍为计划项。"
+    },
+    {
+      "id": "r5",
+      "title": "进行一定的故障修复",
+      "statement": "能够进行一定的故障修复",
+      "task_ids": [
+        "repair.hub-owned",
+        "repair.user-files",
+        "repair.verify",
+        "repair.track"
+      ],
+      "note": "重扫与索引重建已有执行命令；r5 生成并验收入口修订包，审核后写入纳管版本。原 vendor 保留，多文件修复需受控包导入。复检与跟踪已有入口。"
+    },
+    {
+      "id": "r6",
+      "title": "脚本优先 · 模型兜底",
+      "statement": "这些能力不调用相关模型的话，能否通过包括但不限于相关的脚本、算法、程序进行实现，同时，要对能够通过脚本、算法、程序实现的，尽量去实现；不能实现的话，你将这些分工中加入接入模型来实现相应的功能",
+      "task_ids": [
+        "routing.script-first"
+      ],
+      "note": "脚本负责确定性检查、目录与数据库操作；模型处理诊断解释、生成和语义比较，执行状态以工作流历史为准。尚未实现的细分节点保留计划标识。"
+    }
+  ],
+  "counts": {
+    "total": 25,
+    "script": 19,
+    "model": 3,
+    "hybrid": 3,
+    "implemented": 18,
+    "partial": 4,
+    "planned": 3
+  },
+  "script_share": 0.76,
+  "note": "任务路由表（静态目录，不读库）：总计 25 个节点 = 脚本 19 / 混合 3 / 模型 3；已实现 18 / 部分 4 / 计划 3。上方工作流显示最新执行结果；此图标注更细的实现范围，云端是否实际完成以运行历史为准。"
+}

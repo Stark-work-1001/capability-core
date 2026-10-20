@@ -1,0 +1,12 @@
+[package]
+name = "ac-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CapabilityCore 核心类型与 Capability Manifest 协议"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

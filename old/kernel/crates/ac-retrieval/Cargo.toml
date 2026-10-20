@@ -1,0 +1,47 @@
+[package]
+name = "ac-retrieval"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CapabilityCore 混合检索：结构化基线 + 全文/向量/LLM 可选层"
+
+[features]
+# **仅供测试**：把 `vector::testing`（真回环假嵌入服务）暴露给下游 crate。
+# 默认关闭，不进发布产物；ac-mcp 的 dev-dependencies 用它开这个开关，
+# 于是两个 crate 的健康检查测试跑的是**同一份**假服务，而不是两份 msvc 各不相同。
+testing = []
+
+[dependencies]
+ac-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# **M2 第二刀：全文 BM25 召回层。**
+# tantivy 是纯 Rust 的内嵌倒排/FST 检索库，不引入任何外部服务，不改变
+# 「本地优先、无服务」的选型前提（见 02-规划文档 §2 硬性约束）。
+# 它只出现在 ac-retrieval 内部：Stage::FullText 是一个**可选层**，
+# 缺席/故障时一律降级回结构化基线，不得让「索引没了」变成「检索没了」。
+sha2 = "0.10"
+tantivy = { version = "0.26", default-features = false, features = ["mmap", "stopwords", "lz4-compression", "stemmer"] }
+
+# **故意没有 ac-registry。** 硬性约束 #2：检索层通过 trait（AssetStore）与
+# 存储通信，方向是「ac-retrieval 定义 trait，ac-registry 依赖本 crate 实现」。
+# 一旦在这里加上 ac-registry，依赖方向就翻转，trait 定义方反被实现方绑住。
+# 守门见 src/lib.rs 的 guard_retrieval_does_not_depend_on_registry。
+# tantivy 将在 M2 后续切片引入，同样**不得**把 ac-registry 带进来。
+#
+# **但 examples/m2_perf_real.rs 需要读真实 registry.db 的 search_blob 来挖词表。**
+# 为此只加 **dev-dependencies**：它只进入 example / 测试目标，
+# 不进入 lib 目标，因此 ac-retrieval 的发布产物与依赖方向**不受影响**
+# （dev-dependency 不参与下游构建）。这与上面「没有 ac-registry」的
+# 纪律并不冲突，但必须写清楚，否则下一个人会以为可以把它提到 [dependencies]。
+# 守门测试 guard_retrieval_does_not_depend_on_registry 只扫 src/，不扫 examples/，
+# 因为 examples 本来就可以同时用到 trait 定义方与实现方。
+#
+# sha2 同样只为 example 取 SHA256（copy-first 取证）而在这里声明。
+[dev-dependencies]
+ac-registry = { path = "../ac-registry" }
+sha2 = "0.10"

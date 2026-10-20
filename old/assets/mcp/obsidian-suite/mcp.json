@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "obsidian-rest": {
+      "command": "D:\\.my-agent\\.plugin\\obsidian-agent\\mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${QODER_PLUGIN_ROOT}/mcp/server_entry.py"
+      ],
+      "timeout": 120000
+    },
+    "obsidian-cli": {
+      "command": "D:\\.my-agent\\.plugin\\obsidian-agent\\mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${QODER_PLUGIN_ROOT}/mcp/obsidian_cli_server.py"
+      ],
+      "timeout": 120000
+    }
+  }
+}

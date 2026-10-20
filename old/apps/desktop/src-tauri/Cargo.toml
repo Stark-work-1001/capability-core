@@ -1,0 +1,53 @@
+[package]
+name = "assets-desktop"
+version = "0.1.0"
+description = "CapabilityCore 桌面端"
+authors = ["Capability Core Project"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "assets_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+# [[bin]] 必须显式声明：改名前包名 capabilitycore-desktop 与 lib 名 capabilitycore_desktop_lib
+# 恰好能触发 cargo 的同名 bin 自动推导；改名后推导失效，main.rs 不再被当作
+# crate 根，于是报 main function not found。
+[[bin]]
+name = "assets-desktop"
+path = "src/main.rs"
+
+# `--release` 出的就是**成品**：打包前端资源、用自定义协议加载，
+# 运行时不需要再起 vite dev server。
+#
+# 少了这一行，tauri-codegen 会把 `dev` 判成 true，于是跳过
+# `frontendDist` 的资源嵌入（context.rs:178），转而去连 `devUrl`
+# 的 localhost:1420 —— 没起 dev server 就是一片 ERR_CONNECTION_REFUSED。
+# 开发期要连 dev server 的话用 `tauri dev`（它会覆盖这个 feature）。
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+# 版本标识：默认 devel（开发测试），--features standalone 出正式版。
+# 影响 exe 图标、窗口标题、HTTP 端口、界面徽标、数据目录判据；见 build.rs / src/lib.rs。
+standalone = []
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ac-core = { path = "../../../kernel/crates/ac-core" }
+ac-registry = { path = "../../../kernel/crates/ac-registry" }
+# 直接依赖，用于**实测**向量层状态（维修站诊断）。
+# ac-registry 已传递依赖它，但诊断要构造 VectorIndex 做真探活，
+# 不能从间接依赖里拿类型——那会在某次 ac-registry 调整后悄悄断掉。
+ac-retrieval = { path = "../../../kernel/crates/ac-retrieval" }
+# M3「模型接入」侧栏只读 provider 抽象与配置，不含任何厂商 SDK。
+ac-llm = { path = "../../../kernel/crates/ac-llm" }
+ac-ipc = { path = "../../../kernel/crates/ac-ipc" }
+# 对外 HTTP 服务：让 assets-plugin 等外部智能体通过 127.0.0.1:<端口>
+# 连上本中枢（/api/v1/*）。两版端口不同（devel 18197 / standalone 18198），
+# 这样 devel 与 standalone 可以同时运行、互不干扰。
+ac-mcp = { path = "../../../kernel/crates/ac-mcp" }

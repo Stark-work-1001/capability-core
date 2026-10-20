@@ -14,3 +14,8 @@ Thumbs.db
 .env
 .env.*
 *.local
+
+# old/ 的历史材料例外：这些是文本文件，不是构建产物
+!/old/data/
+!/old/data/llm-providers.json
+!old/apps/desktop/src-tauri/resources/*.exe.manifest

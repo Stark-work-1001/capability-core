@@ -1,0 +1,28 @@
+[package]
+name = "ac-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CapabilityCore 对外服务接口与多智能体路由协调"
+
+[[bin]]
+name = "assets-serve"
+path = "src/main.rs"
+
+[dependencies]
+ac-core = { workspace = true }
+# 网关要落到真实的资产库与智能体表，因此依赖方向与 ac-registry 一致：
+# **本 crate 是实现方**，不定义 trait，所以反向依赖不构成循环。
+ac-registry = { path = "../ac-registry" }
+ac-llm = { path = "../ac-llm" }
+ac-retrieval = { path = "../ac-retrieval" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# 让 ac-retrieval 的 `vector::testing`（真回环假嵌入服务）在本 crate 的测试里可见。
+# 只作用于测试目标；正常依赖行仍然不带这个特性。
+[dev-dependencies]
+ac-retrieval = { path = "../ac-retrieval", features = ["testing"] }

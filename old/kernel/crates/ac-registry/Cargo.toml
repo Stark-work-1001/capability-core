@@ -1,0 +1,26 @@
+[package]
+name = "ac-registry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "CapabilityCore 资产注册：扫描、解析、推断、入库"
+
+[dependencies]
+ac-core = { workspace = true }
+# **M2 新增。** 依赖方向：ac-registry -> ac-retrieval（单向）。
+# 耦合点清单写明「retrieval 定义 AssetStore trait，registry 实现」，
+# 所以本 crate 是**实现方**，不是定义方；ac-retrieval 里没有本 crate 的引用。
+# 绝不构成循环（retrieval 不依赖 registry）。
+ac-retrieval = { path = "../ac-retrieval" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# SQLite：bundled 特性会从源码编译，零系统依赖，便于打包
+rusqlite = { version = "0.32", features = ["bundled"] }
+# 内容指纹，用于增量索引
+sha2 = "0.10"
+# 目录递归
+walkdir = "2"

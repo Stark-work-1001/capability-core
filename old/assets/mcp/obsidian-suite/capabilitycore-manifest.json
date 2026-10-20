@@ -1,0 +1,24 @@
+﻿{
+    "asset_id":  "mcp::plugin-obsidian-suite",
+    "managed_at":  "2026-10-17 19:41:45",
+    "managed_by":  "capability-core",
+    "source_plugin":  "C:/external-assets/.plugin/obsidian-suite",
+    "servers":  [
+                    {
+                        "name":  "obsidian-rest",
+                        "command":  "C:/external-assets/.plugin/obsidian-suite/mcp/.venv/Scripts/python.exe",
+                        "args":  [
+                                     "C:/external-assets/capability-core/assets/mcp/obsidian-suite/mcp/server_entry.py"
+                                 ],
+                        "cwd":  "C:/external-assets/capability-core/assets/mcp/obsidian-suite/mcp"
+                    },
+                    {
+                        "name":  "obsidian-cli",
+                        "command":  "C:/external-assets/.plugin/obsidian-suite/mcp/.venv/Scripts/python.exe",
+                        "args":  [
+                                     "C:/external-assets/capability-core/assets/mcp/obsidian-suite/mcp/obsidian_cli_server.py"
+                                 ],
+                        "cwd":  "C:/external-assets/capability-core/assets/mcp/obsidian-suite/mcp"
+                    }
+                ]
+}
