@@ -1,0 +1,16 @@
+node_modules/
+dist-renderer/
+data/
+release/
+capability-core-data/
+*.log
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+Thumbs.db
+
+# 本地环境与凭据
+.env
+.env.*
+*.local

@@ -1,0 +1,28 @@
+{
+  "name": "capability-core",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Capability Core · 能力核心 —— 跨智能体的能力资产中枢：采集、登记、维修、派发与自建能力资产",
+  "main": "apps/desktop/src/main/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build:web": "vite build --config apps/desktop/vite.config.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/start.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc -p apps/desktop/tsconfig.json --noEmit",
+    "mcp:http": "node apps/desktop/src/main/cli.js serve"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "44.7.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
+  }
+}

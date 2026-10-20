@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "example-filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "D:/"
+      ],
+      "description": "示例：本地文件系统 MCP 服务（默认停用，需联网安装依赖）",
+      "enabled": false
+    }
+  }
+}
